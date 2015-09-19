@@ -1,0 +1,191 @@
+<?php
+
+/**
+ * @file
+ * Allow fields to be rendered in blocks.
+ */
+
+/**
+ * Implements hook_block_info().
+ */
+function entity_blocks_block_info() {
+  $blocks = array();
+  $entity_blocks = entity_blocks_get_block_list();
+  foreach ($entity_blocks as $entity_blocks_id => $data) {
+    list($entity_type, $field_name) = explode('-', $entity_blocks_id, 2);
+    $blocks[$entity_blocks_id] = array(
+      'info' => $data['title'],
+      'description' => $data['description'],
+      'required contexts' => array($entity_type => $entity_type),
+    );
+  }
+
+  return $blocks;
+}
+
+/**
+ * Helper function for entity_blocks_block_info().
+ * Builds a list of fields that have been made available as a block.
+ * @return array
+ *   An array with all entity fields with known instances.
+ */
+function entity_blocks_get_block_list() {
+  $types = &backdrop_static(__FUNCTION__, array());
+  if (!empty($types)) {
+    return $types;
+  }
+
+  $cache_key = 'entity_block_fields';
+  if ($cache = cache_get($cache_key)) {
+    $types = $cache->data;
+    if (!empty($types)) {
+      return $types;
+    }
+  }
+
+  // This will hold all the individual field content types.
+  $context_types = array();
+  $entities = entity_get_info();
+
+  $description = t('Field on the referenced entity.');
+  $styles = t('Formatter Styles');
+  $categories = array();
+  $all_fields = array();
+  foreach ($entities as $entity_type => $entity) {
+    foreach ($entity['bundles'] as $type => $bundle) {
+      foreach (field_info_instances($entity_type, $type) as $field_name => $field) {
+        // Build an array of fields to run through entity_blocks_fields_get_field_formatter_info()
+        // to get formatters.
+        $field_info = field_info_field($field_name);
+        $all_fields[$field_name] = $field_info;
+        if (!isset($types[$entity_type . '-' . $field_name])) {
+          $label = t($field['label']);
+          $types[$entity_type . '-' . $field_name] = array(
+            'title' => t('Field: @widget_label (@field_name)', array(
+              '@widget_label' => $label,
+              '@field_name' => $field_name,
+            )),
+            'description' => $description,
+            'widget_label' => $label,
+            'field_name' => $field_name,
+          );
+        }
+      }
+    }
+  }
+
+  $formatter_info = entity_blocks_fields_get_field_formatter_info($all_fields);
+
+  // Get formatter types.
+  foreach ($types as $key => $field_content_type) {
+    list($entity_type, $field_name) = explode('-', $key, 2);
+    $types[$key]['formatters'] = $formatter_info[$field_name];
+  }
+
+  cache_set($cache_key, $types);
+
+  return $types;
+}
+
+/**
+ * Implements hook_block_view().
+ * Retrieves a field, identified by the block delta, from the static cache.
+ */
+function entity_blocks_block_view($delta = '', $settings = array(), $contexts = array()) {
+  $entity_blocks = entity_blocks_get_block_list();
+  
+  
+  if (empty($contexts)) {
+    return;
+  }
+
+  // Get a shortcut to the entity.
+  list($entity_type, $field_name) = explode('-', $delta, 2);
+  $entity = $contexts[$entity_type];
+
+  // Load the entity type's information for this field.
+  $ids = entity_extract_ids($entity_type, $entity);
+  $field = field_info_instance($entity_type, $field_name, $ids[2]);
+  
+
+  // Do not render if the entity type does not have this field.
+  if (empty($field)) {
+    return;
+  }
+  $language = field_language($entity_type, $entity, $field_name);
+
+  $field_settings = array(
+    'label' => $settings['label'],
+    'type' => $settings['formatter'],
+  );
+
+  $all_values = field_get_items($entity_type, $entity, $field_name, $language);
+  if (!is_array($all_values)) {
+    // Do not render if the field is empty.
+    return;
+  }
+
+  $clone = clone $entity;
+  $clone->{$field_name}[$language] = $all_values;
+  $field_output = field_view_field($entity_type, $clone, $field_name, $field_settings, $language);
+  
+  $field_info = module_invoke_all('field_formatter_info');
+
+  // Build the block.
+  $block['title'] = $field_output['#title'];
+  $block['content'] = $field_output; // @todo: wrap in a theme function.
+  return $block;
+}
+
+function entity_blocks_block_configure($delta = '', $settings = array()) {
+  $fields = entity_blocks_get_block_list();
+  $field = $fields[$delta];
+  
+  foreach ($field['formatters'] as $key => $formatter) {
+    $formatters[$key] = $formatter['label'];
+  }
+  $form = array();
+  $form['hide_on_entity'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Hide field on entity'),
+    '#default_value' => $settings['hide_on_entity'],
+  );
+  $form['label'] = array(
+    '#type' => 'radios',
+    '#title' => t('Show field label'),
+    '#default_value' => $settings['label'],
+    '#options' => array(
+      'hidden' => 'Hide label',
+      'above' => 'Above',
+      'inline' => 'Inline',
+    ),
+  );
+  $form['formatter'] = array(
+    '#type' => 'select',
+    '#title' => t('Choose display format'),
+    '#default_value' => $settings['format'],
+    '#options' => $formatters,
+  );
+  return $form;
+}
+
+/**
+ * Helper function for generating all the formatter information associated with
+ * any fields.
+ *
+ * @param $fields
+ *   An array of fully loaded fields.
+ */
+function entity_blocks_fields_get_field_formatter_info($fields) {
+  $info = array();
+  $field_info = module_invoke_all('field_formatter_info');
+  foreach ($fields as $field_name => $field) {
+    foreach ($field_info as $format_name => $formatter_info) {
+      if (in_array($field['type'], $formatter_info['field types'])) {
+        $info[$field_name][$format_name] = $formatter_info;
+      }
+    }
+  }
+  backdrop_alter('field_formatter_info', $info);
+  return $info;
+}

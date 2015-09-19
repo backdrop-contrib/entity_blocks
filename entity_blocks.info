@@ -1,0 +1,4 @@
+name = Entity Blocks
+description = "Displays fields of the current entity as blocks."
+backdrop = 1.x
+type = module
